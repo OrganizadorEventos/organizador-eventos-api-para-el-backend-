@@ -453,12 +453,7 @@ router.post(
     if (cleanCourse.length > 120) return bad(res, 'El curso no puede superar 120 caracteres.');
     if (cleanWeight === undefined) return bad(res, 'El peso debe ser un número entre 0 y 100.');
 
-    if (!Array.isArray(tasks) || tasks.length === 0) {
-      return bad(
-        res,
-        'Agregá al menos una gestión logística al plan.',
-      );
-    }
+    if (!Array.isArray(tasks)) return bad(res, 'Las subtareas deben enviarse como una lista.');
 
     if (tasks.length > 50) {
       return bad(
