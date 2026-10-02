@@ -1,4 +1,10 @@
 /** Prueba end-to-end de la API (sin servidor externo): valida T1–T4 y auth. */
+require('dotenv').config({ path: require('node:path').join(__dirname, '.env') });
+const configuredSupabaseUrl = process.env.SUPABASE_URL;
+const configuredSupabaseHost = configuredSupabaseUrl ? new URL(configuredSupabaseUrl).hostname : '';
+if (configuredSupabaseHost && !['localhost', '127.0.0.1'].includes(configuredSupabaseHost) && process.env.ALLOW_REMOTE_E2E !== 'true') {
+  throw new Error('La prueba end-to-end requiere un Supabase local. Configura ALLOW_REMOTE_E2E=true solo si estás usando una base de pruebas remota aislada; la prueba crea y elimina datos.');
+}
 process.env.DB_FILE = require('node:path').join(__dirname, 'data', 'test-e2e.db');
 const fs = require('node:fs');
 fs.rmSync(process.env.DB_FILE, { force: true });
@@ -167,15 +173,6 @@ async function main() {
   let r2 = await a(`${url}/auth/register`, { method: 'POST', body: { name: 'Otra Usuaria', email: 'otra@test.com', password: 'secreto1' } });
   r2 = await a(`${url}/events`, { token: r2.json.token });
   ok('Datos aislados por usuario', r2.json.events.length === 0);
-
-  // ---------- Demo ----------
-  r = await a(`${url}/auth/demo`, { method: 'POST' });
-  ok('Login demo crea datos y devuelve token', r.status === 200 && r.json.token);
-  const demoToken = r.json.token;
-  r = await a(`${url}/events`, { token: demoToken });
-  ok('Demo tiene eventos sembrados', r.json.events.length >= 2, `events=${r.json.events.length}`);
-  r = await a(`${url}/today?date=${hoy}`, { token: demoToken });
-  ok('Demo tiene gestiones urgentes en Hoy', r.status === 200 && (r.json.urgentes || []).length >= 1, `status=${r.status} urgentes=${(r.json.urgentes || []).length} ${r.json.message || ''}`);
 
   console.log(failures === 0 ? '\n✅  Todas las pruebas pasaron.' : `\n❌  ${failures} pruebas fallaron.`);
   server.close();

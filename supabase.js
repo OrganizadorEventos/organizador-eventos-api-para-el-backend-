@@ -103,6 +103,36 @@ async function updateUserDailyHoursLimit(id, dailyHoursLimit) {
   return parseRow(row);
 }
 
+async function updateUserName(id, name) {
+  const row = await maybeOne(getSupabaseClient().from('users').update({
+    name: String(name).trim(),
+  }).eq('id', Number(id)).select('*'));
+  return parseRow(row);
+}
+
+async function createPasswordResetToken({ userId, tokenHash, expiresAt }) {
+  await result(getSupabaseClient().from('password_reset_tokens').delete()
+    .eq('user_id', Number(userId)).is('used_at', null));
+  return result(getSupabaseClient().from('password_reset_tokens').insert({
+    user_id: Number(userId), token_hash: tokenHash, expires_at: expiresAt,
+  }).select('*').single());
+}
+
+async function getActivePasswordResetToken(tokenHash) {
+  return maybeOne(getSupabaseClient().from('password_reset_tokens').select('*')
+    .eq('token_hash', tokenHash).is('used_at', null).gt('expires_at', new Date().toISOString()));
+}
+
+async function consumePasswordResetToken(tokenHash) {
+  return maybeOne(getSupabaseClient().from('password_reset_tokens').update({ used_at: new Date().toISOString() })
+    .eq('token_hash', tokenHash).is('used_at', null).gt('expires_at', new Date().toISOString()).select('*'));
+}
+
+async function updateUserPassword(id, passwordHash) {
+  return maybeOne(getSupabaseClient().from('users').update({ password_hash: passwordHash })
+    .eq('id', Number(id)).select('id'));
+}
+
 async function createUser({ name, email, passwordHash, isDemo = false, dailyHoursLimit = 6 }) {
   const row = await result(getSupabaseClient().from('users').insert({
     name,
@@ -153,12 +183,14 @@ async function listTodayTasks(userId) {
   return rows.map(parseRow);
 }
 
-async function createEvent({ userId, name, eventType, eventDate, description = '' }) {
+async function createEvent({ userId, name, eventType, eventDate, description = '', course = '', weight = null }) {
   const row = await result(getSupabaseClient().from('events').insert({
     user_id: Number(userId),
     name,
     event_type: eventType,
     event_date: eventDate,
+    course,
+    weight,
     description,
   }).select('*').single());
   return parseRow(row);
@@ -195,97 +227,7 @@ async function createEventWithTasks({ event: eventData, tasks: taskData }) {
   }
 }
 
-async function createSupabaseDemoData(userId) {
-  const existing = await result(getSupabaseClient().from('events').select('id')
-    .eq('user_id', Number(userId)).limit(1));
-  if (existing.length > 0) return false;
-
-  const now = new Date();
-  const formatDate = (date) => date.toISOString().slice(0, 10);
-  const today = formatDate(now);
-  const yesterday = formatDate(new Date(now.getTime() - 86400000));
-  const tomorrow = formatDate(new Date(now.getTime() + 86400000));
-  const in3Days = formatDate(new Date(now.getTime() + 3 * 86400000));
-  const in10Days = formatDate(new Date(now.getTime() + 10 * 86400000));
-  const examples = [
-    {
-      name: 'Fiesta de cumpleaños de Emma',
-      description: 'Festejo familiar de 10 años en casa.',
-      tasks: [
-        ['Reservar el salón', 'Verificar disponibilidad del quincho.', today, 1],
-        ['Enviar invitaciones', 'WhatsApp + papel para abuelos.', today, 2],
-        ['Confirmar catering', 'Pagar seña del foodtruck.', today, 1.5],
-        ['Comprar decoración', 'Globos y mesa dulce.', tomorrow, 1],
-        ['Coordinar música', 'Confirmar equipo de sonido.', in3Days, 1],
-      ],
-    },
-    {
-      name: 'Boda de Laura y Tomás',
-      description: 'Ceremonia + recepción para 120 personas.',
-      tasks: [
-        ['Buscar proveedores de catering', 'Comparar 3 cotizaciones.', yesterday, 4],
-        ['Reservar iglesia', 'Confirmar fecha con el párroco.', today, 1],
-        ['Enviar invitaciones', 'Imprimir tarjetas.', in10Days, 3],
-        ['Confirmar DJ', 'Señar el servicio.', in10Days, 1, 'postponed', 'Se pospuso hasta definir adelanto.'],
-      ],
-    },
-    {
-      name: 'Lanzamiento de producto',
-      description: 'Presentación para clientes en coworking.',
-      tasks: [
-        ['Definir agenda del evento', 'Lista de oradores y tiempos.', yesterday, 2, 'done', 'Agenda aprobada por marketing.'],
-        ['Reservar coworking', 'DTO de la sala grande.', today, 1],
-        ['Enviar invitaciones a clientes', 'Ranking de 40 contactos.', tomorrow, 2],
-        ['Confirmar catering', 'Cafetería del lugar.', tomorrow, 1],
-      ],
-    },
-  ];
-  const createdEventIds = [];
-
-  try {
-    for (const example of examples) {
-      const event = await createEvent({
-        userId,
-        name: example.name,
-        eventType: '',
-        eventDate: '',
-        description: example.description,
-      });
-      createdEventIds.push(event.id);
-
-      for (const [title, description, scheduledDate, hours, status = 'pending', note = ''] of example.tasks) {
-        let task = await createTask({
-          eventId: event.id,
-          userId,
-          title,
-          description,
-          scheduledDate,
-          hours,
-        });
-        if (status !== 'pending') {
-          task = await updateTaskStatus({ id: task.id, status, note });
-          await logTaskEvent({
-            taskId: task.id,
-            userId,
-            action: status,
-            note: note || (status === 'done' ? 'Tarea completada.' : 'Se pospuso por imprevisto.'),
-            newDate: scheduledDate,
-          });
-        }
-      }
-    }
-    return true;
-  } catch (error) {
-    try {
-      await Promise.all(createdEventIds.map((id) => deleteEvent(id)));
-    } catch (cleanupError) {
-      error.cleanupError = cleanupError;
-    }
-    throw error;
-  }
-}
-
-async function updateEvent({ id, name, eventType = null, eventDate = null, description }) {
+async function updateEvent({ id, name, eventType = null, eventDate = null, description, course = null, weight = undefined }) {
   const current = await getEvent(id);
   if (!current) return null;
 
@@ -294,6 +236,8 @@ async function updateEvent({ id, name, eventType = null, eventDate = null, descr
     event_type: eventType ?? current.event_type,
     event_date: eventDate ?? current.event_date,
     description,
+    course: course ?? current.course ?? '',
+    weight: weight === undefined ? current.weight ?? null : weight,
     updated_at: new Date().toISOString(),
   }).eq('id', Number(id)).select('*'));
   return parseRow(row);
@@ -435,6 +379,11 @@ module.exports = {
   getUser,
   getUserByEmail,
   updateUserDailyHoursLimit,
+  updateUserName,
+  createPasswordResetToken,
+  getActivePasswordResetToken,
+  consumePasswordResetToken,
+  updateUserPassword,
   createUser,
   getEvent,
   getEventByOwnerLast,
@@ -444,7 +393,6 @@ module.exports = {
   listTodayTasks,
   createEvent,
   createEventWithTasks,
-  createSupabaseDemoData,
   updateEvent,
   deleteEvent,
   createTask,

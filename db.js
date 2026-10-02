@@ -28,6 +28,8 @@ db.exec(`
     name        TEXT    NOT NULL,
     event_type  TEXT    NOT NULL DEFAULT '',
     event_date  TEXT    NOT NULL DEFAULT '',
+    course      TEXT    NOT NULL DEFAULT '',
+    weight      REAL,
     description TEXT    DEFAULT '',
     created_at  TEXT    DEFAULT (datetime('now')),
     updated_at  TEXT    DEFAULT (datetime('now'))
@@ -72,6 +74,12 @@ if (!eventColumnNames.has('event_type')) {
 
 if (!eventColumnNames.has('event_date')) {
   db.exec("ALTER TABLE events ADD COLUMN event_date TEXT NOT NULL DEFAULT ''");
+}
+if (!eventColumnNames.has('course')) {
+  db.exec("ALTER TABLE events ADD COLUMN course TEXT NOT NULL DEFAULT ''");
+}
+if (!eventColumnNames.has('weight')) {
+  db.exec('ALTER TABLE events ADD COLUMN weight REAL');
 }
 
 function parseRow(row) {
@@ -166,18 +174,22 @@ function createEvent({
   eventType,
   eventDate,
   description = '',
+  course = '',
+  weight = null,
 }) {
   const [run] = map();
 
   run(
     `INSERT INTO events
-      (user_id, name, event_type, event_date, description)
-     VALUES (?, ?, ?, ?, ?)`,
+      (user_id, name, event_type, event_date, description, course, weight)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
     userId,
     name,
     eventType,
     eventDate,
     description,
+    course,
+    weight,
   );
 
   return getEventByOwnerLast(userId, name);
@@ -189,6 +201,8 @@ function updateEvent({
   eventType = null,
   eventDate = null,
   description,
+  course = null,
+  weight = undefined,
 }) {
   const [run] = map();
 
@@ -197,12 +211,16 @@ function updateEvent({
      SET name = ?,
          event_type = COALESCE(?, event_type),
          event_date = COALESCE(?, event_date),
+         course = COALESCE(?, course),
+         weight = ?,
          description = ?,
          updated_at = datetime('now')
      WHERE id = ?`,
     name,
     eventType,
     eventDate,
+    course,
+    weight === undefined ? getEvent(id)?.weight ?? null : weight,
     description,
     Number(id),
   );

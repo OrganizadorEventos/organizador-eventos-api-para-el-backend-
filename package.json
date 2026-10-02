@@ -1,7 +1,7 @@
 {
-  "name": "organizador-eventos-api",
+  "name": "mivo-api",
   "version": "1.0.0",
-  "description": "API REST del Organizador de Eventos Independientes",
+  "description": "API de MIVO para organizar actividades académicas",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

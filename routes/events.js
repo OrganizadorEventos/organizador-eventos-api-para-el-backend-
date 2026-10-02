@@ -27,8 +27,6 @@ router.use(requireAuth);
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const VALID_STATUS = new Set(['pending', 'done', 'postponed']);
-const HOURS_MIN = 0.25;
-const HOURS_MAX = 24;
 
 function bad(res, message) {
   return res.status(400).json({
@@ -76,11 +74,11 @@ async function assertTaskBelongsToEvent(userId, task, eventId) {
 function parseHours(value) {
   const hours = Number(value);
 
-  if (!Number.isFinite(hours) || hours < HOURS_MIN || hours > HOURS_MAX) {
+  if (!Number.isFinite(hours) || hours <= 0) {
     return null;
   }
 
-  return Math.round(hours * 4) / 4;
+  return hours;
 }
 
 function parseDate(value) {
@@ -116,9 +114,18 @@ function eventSummary(event) {
     type: event.event_type,
     date: event.event_date,
     description: event.description,
+    course: event.course || '',
+    weight: event.weight === null || event.weight === undefined ? null : Number(event.weight),
     createdAt: event.created_at,
     updatedAt: event.updated_at,
   };
+}
+
+function parseWeight(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const weight = Number(value);
+  if (!Number.isFinite(weight) || weight < 0 || weight > 100) return undefined;
+  return Math.round(weight * 100) / 100;
 }
 
 async function buildConflict(user, task, newDate, newHours, opts = {}) {
@@ -154,10 +161,7 @@ async function buildConflict(user, task, newDate, newHours, opts = {}) {
   base.excessReduction =
     Math.ceil((scheduledHours - dailyLimit) * 4) / 4;
 
-  base.maxAllowedHours = Math.max(
-    HOURS_MIN,
-    Math.round((dailyLimit - otherHours) * 4) / 4,
-  );
+  base.maxAllowedHours = Math.max(Number.MIN_VALUE, dailyLimit - otherHours);
 
   base.alternatives = [
     {
@@ -265,6 +269,7 @@ router.get(
   '/',
   asyncHandler(async (req, res) => {
     const rows = await listEvents(req.userId);
+    const today = parseDate(req.query.date) || new Date().toISOString().slice(0, 10);
     const events = await Promise.all(rows.map(async (event) => {
       const tasks = await listTasks(event.id);
 
@@ -285,13 +290,15 @@ router.get(
       const postponed = tasks.filter(
         (task) => task.status === 'postponed',
       ).length;
-
+      const doneCount = tasks.filter((task) => task.status === 'done').length;
       return {
         ...eventSummary(event),
         taskCount: tasks.length,
         pendingCount: tasks.filter(
           (task) => task.status === 'pending',
         ).length,
+        doneCount,
+        overdueCount: tasks.filter((task) => task.status === 'pending' && task.scheduled_date && task.scheduled_date < today).length,
         postponedCount: postponed,
         progress: total > 0 ? Math.round((done / total) * 100) : 0,
         doneHours: done,
@@ -357,8 +364,8 @@ router.get(
  *                         format: date
  *                       estimatedHours:
  *                         type: number
- *                         minimum: 0.25
- *                         maximum: 24
+ *                         minimum: 0
+ *                         exclusiveMinimum: true
  *                       description:
  *                         type: string
  *             example:
@@ -410,6 +417,8 @@ router.post(
       type = '',
       date = '',
       description = '',
+      course = '',
+      weight: rawWeight,
       tasks = [],
     } = req.body || {};
 
@@ -417,6 +426,8 @@ router.post(
     const cleanType = String(type).trim();
     const cleanDate = parseDate(date);
     const cleanDescription = String(description).trim();
+    const cleanCourse = String(course).trim();
+    const cleanWeight = parseWeight(rawWeight);
 
     if (cleanName.length < 2) {
       return bad(
@@ -438,6 +449,9 @@ router.post(
         'Ingresá una fecha válida para el evento.',
       );
     }
+
+    if (cleanCourse.length > 120) return bad(res, 'El curso no puede superar 120 caracteres.');
+    if (cleanWeight === undefined) return bad(res, 'El peso debe ser un número entre 0 y 100.');
 
     if (!Array.isArray(tasks) || tasks.length === 0) {
       return bad(
@@ -476,7 +490,7 @@ router.post(
       if (hours === null) {
         return bad(
           res,
-          `Las horas de "${title}" deben estar entre ${HOURS_MIN} y ${HOURS_MAX}.`,
+          `Las horas de "${title}" deben ser mayores que 0.`,
         );
       }
     }
@@ -488,6 +502,8 @@ router.post(
         eventType: cleanType,
         eventDate: cleanDate,
         description: cleanDescription,
+        course: cleanCourse,
+        weight: cleanWeight,
       },
       tasks: tasks.map((taskData) => ({
         title: String(taskData.title).trim(),
@@ -607,17 +623,15 @@ router.patch(
       req.body?.name ?? event.name,
     ).trim();
 
-    const type = String(
-      req.body?.type ?? event.event_type,
-    ).trim();
-
-    const date = parseDate(
-      req.body?.date ?? event.event_date,
-    );
+    const type = String(req.body?.type ?? event.event_type ?? '').trim();
+    const dateInput = req.body?.date ?? event.event_date ?? '';
+    const date = parseDate(dateInput);
 
     const description = String(
       req.body?.description ?? event.description,
     ).trim();
+    const course = String(req.body?.course ?? event.course ?? '').trim();
+    const weight = req.body?.weight === undefined ? (event.weight ?? null) : parseWeight(req.body.weight);
 
     if (name.length < 2) {
       return bad(
@@ -626,26 +640,30 @@ router.patch(
       );
     }
 
-    if (type.length < 2) {
+    if (type.length === 1) {
       return bad(
         res,
         'Ingresá el tipo de evento.',
       );
     }
 
-    if (!date) {
+    if (dateInput && !date) {
       return bad(
         res,
         'Ingresá una fecha válida para el evento.',
       );
     }
+    if (course.length > 120) return bad(res, 'El curso no puede superar 120 caracteres.');
+    if (weight === undefined) return bad(res, 'El peso debe ser un número entre 0 y 100.');
 
     const updated = await updateEvent({
       id: event.id,
       name,
       eventType: type,
-      eventDate: date,
+      eventDate: date || '',
       description,
+      course,
+      weight,
     });
 
     res.json({
@@ -707,8 +725,8 @@ router.delete(
  *                   format: date
  *                 estimatedHours:
  *                   type: number
- *                   minimum: 0.25
- *                   maximum: 24
+ *                   minimum: 0
+ *                   exclusiveMinimum: true
  *             example:
  *               title: Reservar el salón
  *               description: Confirmar disponibilidad y capacidad
@@ -774,7 +792,7 @@ router.post(
     if (hours === null) {
       return bad(
         res,
-        `Las horas deben ser entre ${HOURS_MIN} y ${HOURS_MAX}.`,
+        'Las horas deben ser mayores que 0.',
       );
     }
 
@@ -842,7 +860,7 @@ router.patch(
     if (hours === null) {
       return bad(
         res,
-        `Las horas deben ser entre ${HOURS_MIN} y ${HOURS_MAX}.`,
+        'Las horas deben ser mayores que 0.',
       );
     }
 
@@ -921,7 +939,7 @@ router.post(
     if (newHours === null) {
       return bad(
         res,
-        `Las horas deben ser entre ${HOURS_MIN} y ${HOURS_MAX}.`,
+        'Las horas deben ser mayores que 0.',
       );
     }
 

@@ -42,6 +42,8 @@ router.get('/', asyncHandler(async (req, res) => {
         urgencyScore: scoreUrgency(t, today),
         eventName: ev ? ev.name : 'Sin evento',
         eventId: ev ? ev.id : null,
+        eventType: ev ? ev.event_type : '',
+        course: ev ? ev.course || '' : '',
         eventProgress: total > 0 ? Math.round((done / total) * 100) : 0,
       };
     }));
@@ -50,6 +52,15 @@ router.get('/', asyncHandler(async (req, res) => {
   const urgentes = decorated
     .filter((t) => t.isToday || t.overdue)
     .sort((a, b) => b.urgencyScore - a.urgencyScore);
+  const weekEnd = new Date(`${today}T12:00:00`);
+  weekEnd.setDate(weekEnd.getDate() + 7);
+  const weekEndDate = `${weekEnd.getFullYear()}-${String(weekEnd.getMonth() + 1).padStart(2, '0')}-${String(weekEnd.getDate()).padStart(2, '0')}`;
+  const upcoming = decorated
+    .filter((task) => task.status === 'pending' && task.scheduledDate > today && task.scheduledDate <= weekEndDate)
+    .sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate) || b.urgencyScore - a.urgencyScore);
+  const future = decorated
+    .filter((task) => task.status === 'pending' && task.scheduledDate > today)
+    .sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate) || b.urgencyScore - a.urgencyScore);
 
   const overdueHours = tasks.reduce(
     (sum, task) => sum + (task.scheduled_date !== null && task.scheduled_date !== undefined && task.scheduled_date < today ? Number(task.estimated_hours) : 0),
@@ -67,6 +78,8 @@ router.get('/', asyncHandler(async (req, res) => {
     overdueHours,
     workloadHours: overdueHours + todayHours,
     urgentes,
+    upcoming,
+    future,
     rules: [
       '1. Vencidas sin hacer: máxima urgencia (+200 puntos).',
       '2. Gestiones planificadas para hoy: urgente (+100 puntos).',
