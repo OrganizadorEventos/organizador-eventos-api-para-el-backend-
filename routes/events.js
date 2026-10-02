@@ -5,6 +5,7 @@ const {
   createEvent,
   createEventWithTasks,
   updateEvent,
+  setEventStatus,
   deleteEvent,
   listEvents,
   getTask,
@@ -71,6 +72,22 @@ async function assertTaskBelongsToEvent(userId, task, eventId) {
   return event;
 }
 
+async function completeEventTasks(event, userId) {
+  const tasks = await listTasks(event.id);
+  for (const task of tasks) {
+    if (task.status === 'done') continue;
+    const note = 'Completada al marcar terminado el evento.';
+    await updateTaskStatus({ id: task.id, status: 'done', note: task.note || note });
+    await logTaskEvent({ taskId: task.id, userId, action: 'done', note });
+  }
+}
+
+async function syncEventStatus(eventId) {
+  const tasks = await listTasks(eventId);
+  const status = tasks.length > 0 && tasks.every((task) => task.status === 'done') ? 'done' : 'pending';
+  return setEventStatus(eventId, status);
+}
+
 function parseHours(value) {
   const hours = Number(value);
 
@@ -90,7 +107,18 @@ function parseDate(value) {
     return null;
   }
 
-  return String(value);
+  const date = String(value);
+  const [year, month, day] = date.split('-').map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  if (parsed.getUTCFullYear() !== year || parsed.getUTCMonth() !== month - 1 || parsed.getUTCDate() !== day) {
+    return null;
+  }
+  return date;
+}
+
+function parseTime(value) {
+  if (value === undefined || value === null || value === '') return '';
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(String(value)) ? String(value) : null;
 }
 
 function taskProgress(task) {
@@ -113,9 +141,11 @@ function eventSummary(event) {
     name: event.name,
     type: event.event_type,
     date: event.event_date,
+    time: event.event_time || '',
     description: event.description,
     course: event.course || '',
     weight: event.weight === null || event.weight === undefined ? null : Number(event.weight),
+    status: event.status || 'pending',
     createdAt: event.created_at,
     updatedAt: event.updated_at,
   };
@@ -300,7 +330,7 @@ router.get(
         doneCount,
         overdueCount: tasks.filter((task) => task.status === 'pending' && task.scheduled_date && task.scheduled_date < today).length,
         postponedCount: postponed,
-        progress: total > 0 ? Math.round((done / total) * 100) : 0,
+        progress: tasks.length > 0 ? Math.round((doneCount / tasks.length) * 100) : 0,
         doneHours: done,
         totalHours: total,
       };
@@ -419,12 +449,14 @@ router.post(
       description = '',
       course = '',
       weight: rawWeight,
+      time = '',
       tasks = [],
     } = req.body || {};
 
     const cleanName = String(name).trim();
     const cleanType = String(type).trim();
     const cleanDate = parseDate(date);
+    const cleanTime = parseTime(time);
     const cleanDescription = String(description).trim();
     const cleanCourse = String(course).trim();
     const cleanWeight = parseWeight(rawWeight);
@@ -449,6 +481,7 @@ router.post(
         'Ingresá una fecha válida para el evento.',
       );
     }
+    if (cleanTime === null) return bad(res, 'Ingresá una hora válida para el evento.');
 
     if (cleanCourse.length > 120) return bad(res, 'El curso no puede superar 120 caracteres.');
     if (cleanWeight === undefined) return bad(res, 'El peso debe ser un número entre 0 y 100.');
@@ -496,6 +529,7 @@ router.post(
         name: cleanName,
         eventType: cleanType,
         eventDate: cleanDate,
+        eventTime: cleanTime,
         description: cleanDescription,
         course: cleanCourse,
         weight: cleanWeight,
@@ -597,7 +631,9 @@ router.get(
         ...eventSummary(event),
         tasks,
         progress:
-          total > 0 ? Math.round((done / total) * 100) : 0,
+          tasks.length > 0
+            ? Math.round((tasks.filter((task) => task.status === 'done').length / tasks.length) * 100)
+            : 0,
         doneHours: done,
         totalHours: total,
         activities: await listActivities(req.userId, event.id),
@@ -607,8 +643,31 @@ router.get(
 );
 
 router.patch(
+  '/:id/status',
+  asyncHandler(async (req, res) => {
+    const event = await assertOwnsEvent(req.userId, Number(req.params.id));
+    const status = req.body?.status;
+    if (!['pending', 'done'].includes(status)) return bad(res, 'Estado de evento no válido.');
+    const updated = await setEventStatus(event.id, status);
+    if (status === 'done') await completeEventTasks(event, req.userId);
+    res.json({ event: eventSummary(updated) });
+  }),
+);
+
+router.patch(
   '/:id',
   asyncHandler(async (req, res) => {
+    // Accept status updates on the existing event endpoint too. This keeps
+    // clients working while deployments transition to /:id/status.
+    if (req.body?.status !== undefined) {
+      const event = await assertOwnsEvent(req.userId, Number(req.params.id));
+      const status = req.body.status;
+      if (!['pending', 'done'].includes(status)) return bad(res, 'Estado de evento no válido.');
+      const updated = await setEventStatus(event.id, status);
+      if (status === 'done') await completeEventTasks(event, req.userId);
+      return res.json({ event: eventSummary(updated) });
+    }
+
     const event = await assertOwnsEvent(
       req.userId,
       Number(req.params.id),
@@ -621,6 +680,7 @@ router.patch(
     const type = String(req.body?.type ?? event.event_type ?? '').trim();
     const dateInput = req.body?.date ?? event.event_date ?? '';
     const date = parseDate(dateInput);
+    const time = parseTime(req.body?.time ?? event.event_time ?? '');
 
     const description = String(
       req.body?.description ?? event.description,
@@ -648,6 +708,7 @@ router.patch(
         'Ingresá una fecha válida para el evento.',
       );
     }
+    if (time === null) return bad(res, 'Ingresá una hora válida para el evento.');
     if (course.length > 120) return bad(res, 'El curso no puede superar 120 caracteres.');
     if (weight === undefined) return bad(res, 'El peso debe ser un número entre 0 y 100.');
 
@@ -656,6 +717,7 @@ router.patch(
       name,
       eventType: type,
       eventDate: date || '',
+      eventTime: time,
       description,
       course,
       weight,
@@ -805,6 +867,7 @@ router.post(
       userId: req.userId,
       action: 'created',
     });
+    await syncEventStatus(event.id);
 
     res.status(201).json({
       task: taskProgress(task),
@@ -868,6 +931,23 @@ router.patch(
       scheduledDate: date,
       hours,
     });
+
+    const changed = task.title !== title
+      || task.description !== String(req.body?.description ?? task.description).trim()
+      || task.scheduled_date !== date
+      || Number(task.estimated_hours) !== hours;
+    if (changed) {
+      await logTaskEvent({
+        taskId: task.id,
+        userId: req.userId,
+        action: 'edited',
+        note: 'Subtarea actualizada.',
+        prevDate: task.scheduled_date,
+        newDate: date,
+        prevHours: task.estimated_hours,
+        newHours: hours,
+      });
+    }
 
     res.json({
       task: taskProgress(updated),
@@ -1037,6 +1117,7 @@ router.post(
       action,
       note,
     });
+    await syncEventStatus(Number(req.params.eventId));
 
     res.json({
       task: taskProgress(updated),

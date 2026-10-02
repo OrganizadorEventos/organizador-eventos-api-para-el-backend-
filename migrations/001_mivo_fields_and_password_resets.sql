@@ -3,7 +3,8 @@
 
 ALTER TABLE public.events
   ADD COLUMN IF NOT EXISTS course text NOT NULL DEFAULT '',
-  ADD COLUMN IF NOT EXISTS weight numeric(5,2);
+  ADD COLUMN IF NOT EXISTS weight numeric(5,2),
+  ADD COLUMN IF NOT EXISTS event_time text NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS public.password_reset_tokens (
   token_hash text PRIMARY KEY,
@@ -15,3 +16,5 @@ CREATE TABLE IF NOT EXISTS public.password_reset_tokens (
 
 CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user
   ON public.password_reset_tokens(user_id, expires_at DESC);
+
+NOTIFY pgrst, 'reload schema';

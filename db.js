@@ -28,6 +28,7 @@ db.exec(`
     name        TEXT    NOT NULL,
     event_type  TEXT    NOT NULL DEFAULT '',
     event_date  TEXT    NOT NULL DEFAULT '',
+    event_time  TEXT    NOT NULL DEFAULT '',
     course      TEXT    NOT NULL DEFAULT '',
     weight      REAL,
     description TEXT    DEFAULT '',
@@ -74,6 +75,9 @@ if (!eventColumnNames.has('event_type')) {
 
 if (!eventColumnNames.has('event_date')) {
   db.exec("ALTER TABLE events ADD COLUMN event_date TEXT NOT NULL DEFAULT ''");
+}
+if (!eventColumnNames.has('event_time')) {
+  db.exec("ALTER TABLE events ADD COLUMN event_time TEXT NOT NULL DEFAULT ''");
 }
 if (!eventColumnNames.has('course')) {
   db.exec("ALTER TABLE events ADD COLUMN course TEXT NOT NULL DEFAULT ''");
@@ -173,6 +177,7 @@ function createEvent({
   name,
   eventType,
   eventDate,
+  eventTime = '',
   description = '',
   course = '',
   weight = null,
@@ -181,12 +186,13 @@ function createEvent({
 
   run(
     `INSERT INTO events
-      (user_id, name, event_type, event_date, description, course, weight)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      (user_id, name, event_type, event_date, event_time, description, course, weight)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     userId,
     name,
     eventType,
     eventDate,
+    eventTime,
     description,
     course,
     weight,
@@ -200,6 +206,7 @@ function updateEvent({
   name,
   eventType = null,
   eventDate = null,
+  eventTime = null,
   description,
   course = null,
   weight = undefined,
@@ -211,6 +218,7 @@ function updateEvent({
      SET name = ?,
          event_type = COALESCE(?, event_type),
          event_date = COALESCE(?, event_date),
+         event_time = COALESCE(?, event_time),
          course = COALESCE(?, course),
          weight = ?,
          description = ?,
@@ -219,6 +227,7 @@ function updateEvent({
     name,
     eventType,
     eventDate,
+    eventTime,
     course,
     weight === undefined ? getEvent(id)?.weight ?? null : weight,
     description,

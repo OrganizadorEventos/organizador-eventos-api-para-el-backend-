@@ -1,6 +1,10 @@
 const jwt = require('jsonwebtoken');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-organizador-events';
+const configuredSecret = process.env.JWT_SECRET?.trim();
+if (process.env.NODE_ENV === 'production' && (!configuredSecret || configuredSecret === 'cambiar-este-secreto-en-produccion')) {
+  throw new Error('JWT_SECRET debe configurarse con un valor seguro en producción.');
+}
+const JWT_SECRET = configuredSecret || 'dev-secret-organizador-events';
 
 const EXPIRES_IN = '7d';
 
@@ -34,6 +38,17 @@ function notFound(req, res) {
 function errorHandler(err, req, res, next) {
   const status = err.status || 500;
   if (status >= 500) console.error(err);
+  const errorMessage = err.message || '';
+  const missingEventStatus =
+    (err.code === 'PGRST204' || err.code === '42703' || /schema cache/i.test(errorMessage)) &&
+    /events/i.test(errorMessage) &&
+    /status/i.test(errorMessage);
+  if (missingEventStatus) {
+    return res.status(503).json({
+      error: 'event_status_migration_required',
+      message: 'No se pudo actualizar el evento porque falta la columna de estado en Supabase. Ejecuta backend/migrations/004_event_status_and_cascade_delete.sql en el SQL Editor de Supabase y vuelve a intentarlo.',
+    });
+  }
   const message = err.expose !== false ? (err.message || 'Error interno del servidor.') : 'Error interno del servidor.';
   res.status(status).json({ error: err.code || 'error', message });
 }

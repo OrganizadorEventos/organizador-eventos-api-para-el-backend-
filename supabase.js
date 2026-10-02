@@ -76,6 +76,11 @@ async function maybeOne(query) {
   return data;
 }
 
+function isMissingEventTimeColumn(error) {
+  return error?.code === 'PGRST204'
+    && /event_time/i.test(`${error.message || ''} ${error.details || ''}`);
+}
+
 function parseRow(row) {
   if (!row) return null;
   const parsed = { ...row };
@@ -183,8 +188,9 @@ async function listTodayTasks(userId) {
   return rows.map(parseRow);
 }
 
-async function createEvent({ userId, name, eventType, eventDate, description = '', course = '', weight = null }) {
-  const row = await result(getSupabaseClient().from('events').insert({
+async function createEvent({ userId, name, eventType, eventDate, eventTime = '', description = '', course = '', weight = null }) {
+  const client = getSupabaseClient();
+  const event = {
     user_id: Number(userId),
     name,
     event_type: eventType,
@@ -192,7 +198,16 @@ async function createEvent({ userId, name, eventType, eventDate, description = '
     course,
     weight,
     description,
-  }).select('*').single());
+  };
+  let row;
+  try {
+    row = await result(client.from('events').insert({ ...event, event_time: eventTime }).select('*').single());
+  } catch (error) {
+    // Older Supabase schemas may not have event_time yet. Creating the event
+    // should still work; the event date drives its appearance in Hoy.
+    if (!isMissingEventTimeColumn(error)) throw error;
+    row = await result(client.from('events').insert(event).select('*').single());
+  }
   return parseRow(row);
 }
 
@@ -227,11 +242,12 @@ async function createEventWithTasks({ event: eventData, tasks: taskData }) {
   }
 }
 
-async function updateEvent({ id, name, eventType = null, eventDate = null, description, course = null, weight = undefined }) {
+async function updateEvent({ id, name, eventType = null, eventDate = null, eventTime = null, description, course = null, weight = undefined }) {
   const current = await getEvent(id);
   if (!current) return null;
 
-  const row = await maybeOne(getSupabaseClient().from('events').update({
+  const client = getSupabaseClient();
+  const values = {
     name,
     event_type: eventType ?? current.event_type,
     event_date: eventDate ?? current.event_date,
@@ -239,12 +255,30 @@ async function updateEvent({ id, name, eventType = null, eventDate = null, descr
     course: course ?? current.course ?? '',
     weight: weight === undefined ? current.weight ?? null : weight,
     updated_at: new Date().toISOString(),
-  }).eq('id', Number(id)).select('*'));
+  };
+  let row;
+  try {
+    row = await maybeOne(client.from('events').update({
+      ...values,
+      event_time: eventTime ?? current.event_time ?? '',
+    }).eq('id', Number(id)).select('*'));
+  } catch (error) {
+    if (!isMissingEventTimeColumn(error)) throw error;
+    row = await maybeOne(client.from('events').update(values).eq('id', Number(id)).select('*'));
+  }
   return parseRow(row);
 }
 
 async function deleteEvent(id) {
   await result(getSupabaseClient().from('events').delete().eq('id', Number(id)));
+}
+
+async function setEventStatus(id, status) {
+  const row = await maybeOne(getSupabaseClient().from('events').update({
+    status,
+    updated_at: new Date().toISOString(),
+  }).eq('id', Number(id)).select('*'));
+  return parseRow(row);
 }
 
 async function createTask({ eventId, userId, title, description = '', scheduledDate = null, hours = 1 }) {
@@ -394,6 +428,7 @@ module.exports = {
   createEvent,
   createEventWithTasks,
   updateEvent,
+  setEventStatus,
   deleteEvent,
   createTask,
   updateTask,
