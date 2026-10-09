@@ -148,7 +148,7 @@ router.patch('/me', requireAuth, asyncHandler(async (req, res) => {
     return res.json({ user: publicUser(user) });
   }
   const limit = Number(dailyHoursLimit);
-  if (!Number.isFinite(limit) || limit <= 0 || limit > 24) {
+  if (!Number.isFinite(limit) || limit < 1 || limit > 24) {
     return res.status(422).json({ error: 'validation', message: 'El límite diario debe ser mayor a 0 y menor a 24 horas.' });
   }
   const user = await updateUserDailyHoursLimit(req.userId, limit);

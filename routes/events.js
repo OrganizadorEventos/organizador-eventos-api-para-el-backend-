@@ -853,6 +853,15 @@ router.post(
       );
     }
 
+    const user = await getUser(req.userId);
+    const conflict = await buildConflict(user, null, date, hours);
+    if (conflict.excessHours > 0) {
+      return res.status(409).json({
+        error: 'conflict',
+        conflict,
+        message: conflict.message,
+      });
+    }
     const task = await createTask({
       eventId: event.id,
       userId: req.userId,
@@ -923,16 +932,22 @@ router.patch(
     }
 
     const updated = await updateTask({
-      id: task.id,
-      title,
-      description: String(
-        req.body?.description ?? task.description,
-      ).trim(),
-      scheduledDate: date,
-      hours,
-    });
+  id: task.id,
+  title,
+  description: String(
+    req.body.description ?? task.description,
+  ).trim(),
+  scheduledDate: date,
+  hours,
+});
 
-    const changed = task.title !== title
+console.log('--- SUBTAREA ACTUALIZADA ---');
+console.log('ID de subtarea:', task.id);
+console.log('Fecha anterior:', task.scheduled_date);
+console.log('Fecha nueva:', date);
+console.log('-----------------------------');
+
+const changed = task.title !== title
       || task.description !== String(req.body?.description ?? task.description).trim()
       || task.scheduled_date !== date
       || Number(task.estimated_hours) !== hours;
@@ -1035,10 +1050,8 @@ router.post(
       },
     );
 
-    if (
-      conflict.excessHours > 0 &&
-      !req.body?.acceptConflict
-    ) {
+    // El límite diario no puede omitirse con acceptConflict enviado por el cliente.
+    if (conflict.excessHours > 0) {
       return res.status(409).json({
         error: 'conflict',
         conflict,
@@ -1055,14 +1068,17 @@ router.post(
       hours: newHours,
     });
 
+    console.log('--- SUBTAREA REPROGRAMADA ---');
+    console.log('ID de subtarea:', task.id);
+    console.log('Fecha anterior:', task.scheduled_date);
+    console.log('Fecha nueva:', newDate);
+    console.log('-----------------------------');
+    
     await logTaskEvent({
       taskId: task.id,
       userId: req.userId,
       action: 'rescheduled',
-      note:
-        conflict.excessHours > 0
-          ? 'Reprogramada aceptando sobrecarga diaria.'
-          : 'Reprogramada.',
+      note: 'Reprogramada.',
       prevDate: task.scheduled_date,
       newDate,
       prevHours: task.estimated_hours,
