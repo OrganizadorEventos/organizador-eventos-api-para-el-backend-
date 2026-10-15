@@ -113,38 +113,58 @@ async function main() {
   r = await a(`${url}/events/${eventId}/tasks/${t1.id + 2}/reschedule`, { method: 'POST', token, body: { newDate: hoy } });
   ok('Reprogramar sin sobrecarga -> 200', r.status === 200, `status=${r.status} error=${r.json.error || ''}`);
 
-  // Sumamos gestiones de 1h al día de hoy: 3h + 2h = 5h
-  r = await a(`${url}/events/${eventId}/tasks`, { method: 'POST', token, body: { title: 'Coordinar proveedores A', scheduledDate: hoy, estimatedHours: 1 } });
+  // Umbrales exactos: 4.5h existentes + 0.5h = 5h, luego +1h = 6h.
+  r = await a(`${url}/events/${eventId}/tasks`, { method: 'POST', token, body: { title: 'Coordinar proveedores A', scheduledDate: hoy, estimatedHours: 0.5 } });
+  ok('Carga de 5h sobre 6h permite agregar -> 201', r.status === 201);
   r = await a(`${url}/events/${eventId}/tasks`, { method: 'POST', token, body: { title: 'Coordinar proveedores B', scheduledDate: hoy, estimatedHours: 1 } });
-  // hoy = 1(reservar) + 2(invitar) + 1.5(catering) + 1 + 1 = 6.5h > 6 -> conflicto si movemos otra tarea grande aquí
+  ok('Carga exactamente de 6h permite agregar -> 201', r.status === 201);
+  r = await a(`${url}/events/${eventId}/tasks`, { method: 'POST', token, body: { title: 'Coordinar proveedores C', scheduledDate: hoy, estimatedHours: 1 } });
+  ok('Carga de 7h sobre 6h se bloquea -> 409', r.status === 409 && r.json.conflict.scheduledHours === 7, `scheduledHours=${r.json.conflict?.scheduledHours}`);
+  r = await a(`${url}/events/${eventId}`, { token });
+  ok('La subtarea en conflicto no se guardó', !r.json.event.tasks.some((task) => task.title === 'Coordinar proveedores C'));
 
-  // Reprogramar "Confirmar catering" con más horas a hoy: 5h (otras) + 2h = 7h > 6h -> CONFLICTO
+  // Editar duración excluye la propia subtarea y bloquea el nuevo total de 7h.
+  r = await a(`${url}/events/${eventId}/tasks/${t1.id + 1}`, { method: 'PATCH', token, body: { estimatedHours: 3 } });
+  ok('Editar duración que subiría el día a 7h -> 409', r.status === 409 && r.json.conflict.scheduledHours === 7, `scheduledHours=${r.json.conflict?.scheduledHours}`);
+  r = await a(`${url}/events/${eventId}`, { token });
+  ok('La duración en conflicto conserva su valor original', r.json.event.tasks.find((task) => task.id === t1.id + 1).estimatedHours === 2);
+
+  // Reprogramar "Confirmar catering" con más horas a hoy: 4.5h (otras) + 2h = 6.5h -> CONFLICTO
   r = await a(`${url}/events/${eventId}/tasks/${t1.id + 2}/reschedule`, { method: 'POST', token, body: { newDate: hoy, newHours: 2 } });
   ok('Conflicto detectado -> 409', r.status === 409, `status=${r.status} (${r.json.message || ''})`);
   const conflict = r.json.conflict;
   ok('Conflicto reporta límite 6h', conflict.dailyLimit === 6, `limit=${conflict.dailyLimit}`);
-  ok('Conflicto reporta horas programadas > límite', conflict.scheduledHours > 6, `scheduledHours=${conflict.scheduledHours}`);
+  ok('Conflicto reporta 6.5h planificadas', conflict.scheduledHours === 6.5, `scheduledHours=${conflict.scheduledHours}`);
   ok('Conflicto ofrece alternativas (T3)', Array.isArray(conflict.alternatives) && conflict.alternatives.length >= 4, `alt=${conflict.alternatives.length}`);
 
-  // Resolver: reducir horas (5h otras + 1h <= 6h ya no es conflicto)
+  // Resolver: reducir horas (4.5h otras + 1.5h = 6h)
   r = await a(`${url}/events/${eventId}/tasks/${t1.id + 2}/reschedule`, { method: 'POST', token, body: { newDate: hoy, newHours: conflict.maxAllowedHours } });
   ok('Resolver reduciendo horas -> 200', r.status === 200, `status=${r.status} (${r.json.message || ''})`);
   ok('Tarea actualizada con horas reducidas', r.json.task.estimatedHours === conflict.maxAllowedHours);
 
-  // Resolver: aceptar sobrecarga explícitamente
+  // El backend no permite omitir el límite con acceptConflict.
   r = await a(`${url}/events/${eventId}/tasks/${t1.id + 2}/reschedule`, { method: 'POST', token, body: { newDate: hoy, newHours: 3, acceptConflict: true } });
-  ok('Aceptar sobrecarga -> 200', r.status === 200);
+  ok('La sobrecarga sigue bloqueada con acceptConflict -> 409', r.status === 409);
 
   // Reprogramar a día libre -> sin conflicto
   r = await a(`${url}/events/${eventId}/tasks/${t1.id}/reschedule`, { method: 'POST', token, body: { newDate: pdate(1), newHours: 3 } });
   ok('Reprogramar a día libre -> 200 sin conflicto', r.status === 200 && r.json.conflict.excessHours === 0);
+  r = await a(`${url}/today?date=${hoy}`, { token });
+  ok('Mover a otra fecha reduce la carga del día de origen', r.json.todayHours === 5, `todayHours=${r.json.todayHours}`);
+  r = await a(`${url}/today?date=${pdate(1)}`, { token });
+  ok('Mover a otra fecha suma la carga al día de destino', r.json.todayHours === 3, `todayHours=${r.json.todayHours}`);
 
   // ---------- T4: ejecución + progreso ----------
   r = await a(`${url}/events/${eventId}/tasks/${t1.id + 2}/execute`, { method: 'POST', token, body: { action: 'done', note: 'Catering confirmado por teléfono.' } });
   ok('Registrar tarea como hecha (T4)', r.status === 200 && r.json.task.status === 'done');
+  r = await a(`${url}/events/${eventId}/tasks/${t1.id + 2}`, { method: 'PATCH', token, body: { estimatedHours: 24 } });
+  ok('Editar horas de tarea completada no suma carga activa', r.status === 200 && r.json.task.status === 'done');
 
   r = await a(`${url}/events/${eventId}/tasks/${t1.id + 1}/execute`, { method: 'POST', token, body: { action: 'postponed', note: 'Falta presupuesto.' } });
   ok('Registrar tarea como pospuesta (T4)', r.status === 200 && r.json.task.status === 'postponed');
+
+  r = await a(`${url}/events/${eventId}/tasks/${t1.id + 1}`, { method: 'PATCH', token, body: { estimatedHours: 24 } });
+  ok('Editar horas de tarea pospuesta no suma carga activa', r.status === 200 && r.json.task.status === 'postponed');
 
   r = await a(`${url}/events/${eventId}`, { token });
   ok('Progreso del evento calculado', typeof r.json.event.progress === 'number' && r.json.event.progress >= 0, `progress=${r.json.event.progress}`);

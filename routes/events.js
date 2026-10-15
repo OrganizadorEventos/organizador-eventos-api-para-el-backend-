@@ -21,6 +21,7 @@ const {
   suggestedDates,
 } = require('../supabase');
 const { requireAuth, asyncHandler } = require('../middleware');
+const { isOverloaded } = require('../daily-limit');
 
 const router = express.Router();
 
@@ -166,15 +167,16 @@ async function buildConflict(user, task, newDate, newHours, opts = {}) {
     task ? task.id : null,
   );
 
-  const scheduledHours = otherHours + newHours;
-  const hasConflict = scheduledHours > dailyLimit;
+  const movingHours = !task || task.status === 'pending' ? newHours : 0;
+  const scheduledHours = otherHours + movingHours;
+  const hasConflict = isOverloaded(scheduledHours, dailyLimit);
 
   const base = {
     type: 'OVERLOAD',
     dailyLimit,
     scheduledHours,
     otherHours,
-    movingHours: newHours,
+    movingHours,
     excessHours: hasConflict ? scheduledHours - dailyLimit : 0,
     overloadHours: hasConflict ? scheduledHours - dailyLimit : 0,
     date: newDate,
@@ -931,6 +933,21 @@ router.patch(
       );
     }
 
+    const scheduleChanged = date !== task.scheduled_date
+      || hours !== Number(task.estimated_hours);
+    if (task.status === 'pending' && scheduleChanged) {
+      const user = await getUser(req.userId);
+      const conflict = await buildConflict(user, task, date, hours);
+      if (conflict.excessHours > 0) {
+        return res.status(409).json({
+          error: 'conflict',
+          conflict,
+          message: conflict.message,
+          task: taskProgress(task),
+        });
+      }
+    }
+
     const updated = await updateTask({
   id: task.id,
   title,
@@ -1041,12 +1058,9 @@ router.post(
       newDate,
       newHours,
       {
-        suggestedDates: await suggestedDates(
-          user.id,
-          task,
-          newDate,
-          3,
-        ),
+        suggestedDates: task.status === 'pending'
+          ? await suggestedDates(user.id, task, newDate, 3)
+          : [],
       },
     );
 

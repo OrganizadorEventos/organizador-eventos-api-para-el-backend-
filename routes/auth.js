@@ -6,6 +6,8 @@ const {
   getUser,
   getUserByEmail,
   updateUserDailyHoursLimit,
+  listEvents,
+  listTasks,
   updateUserName,
   createPasswordResetToken,
   getActivePasswordResetToken,
@@ -13,6 +15,7 @@ const {
   updateUserPassword,
 } = require('../supabase');
 const { signToken, requireAuth, asyncHandler } = require('../middleware');
+const { dailyLimitConflicts } = require('../daily-limit');
 
 const router = express.Router();
 
@@ -150,6 +153,22 @@ router.patch('/me', requireAuth, asyncHandler(async (req, res) => {
   const limit = Number(dailyHoursLimit);
   if (!Number.isFinite(limit) || limit < 1 || limit > 24) {
     return res.status(422).json({ error: 'validation', message: 'El límite diario debe ser mayor a 0 y menor a 24 horas.' });
+  }
+  const currentUser = await getUser(req.userId);
+  if (currentUser && limit < Number(currentUser.daily_hours_limit)) {
+    const events = await listEvents(req.userId);
+    const tasks = (await Promise.all(events.map(async (event) =>
+      (await listTasks(event.id)).map((task) => ({ ...task, eventId: event.id })),
+    ))).flat();
+    const conflicts = dailyLimitConflicts(tasks, limit);
+
+    if (conflicts.length > 0) {
+      return res.status(409).json({
+        error: 'conflict',
+        message: 'Hay subtareas que superan el nuevo límite diario.',
+        conflicts,
+      });
+    }
   }
   const user = await updateUserDailyHoursLimit(req.userId, limit);
   if (!user) return res.status(401).json({ error: 'auth_required', message: 'Sesi\u00f3n no v\u00e1lida.' });
